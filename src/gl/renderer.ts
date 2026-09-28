@@ -46,8 +46,6 @@ export class Renderer {
   private vao: WebGLVertexArrayObject
   private texture: WebGLTexture | null = null
   private mask: Target[] = [] // ping-pong targets on the small image
-  private maskW = 0
-  private maskH = 0
   private floatTargets: boolean
   private shoulderCache = { exposure: NaN, knee: NaN, a: 1 }
   width = 0
@@ -159,8 +157,8 @@ export class Renderer {
     this.mask = []
     if (!this.floatTargets) return
     const s = Math.min(1, tuning.maskSize / Math.max(this.width, this.height))
-    const w = (this.maskW = Math.max(1, Math.round(this.width * s)))
-    const h = (this.maskH = Math.max(1, Math.round(this.height * s)))
+    const w = Math.max(1, Math.round(this.width * s))
+    const h = Math.max(1, Math.round(this.height * s))
     const [A, B] = (this.mask = [this.target(w, h, true), this.target(w, h, true)])
     const r = Math.min(32, tuning.maskRadius)
     const blur = (from: Target, to: Target, dx: number, dy: number) =>
@@ -255,7 +253,10 @@ export class Renderer {
   async export(adj: Adjustments, quality = 0.95): Promise<Blob> {
     const px = this.renderToPixels(adj)
     const c = new OffscreenCanvas(this.width, this.height)
-    c.getContext('2d')!.putImageData(new ImageData(px, this.width, this.height), 0, 0)
+    const ctx = c.getContext('2d')!
+    const img = ctx.createImageData(this.width, this.height)
+    img.data.set(px)
+    ctx.putImageData(img, 0, 0)
     return c.convertToBlob({ type: 'image/jpeg', quality })
   }
 }

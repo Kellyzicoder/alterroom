@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/accuracy.ts","./src/main.tsx","./src/gl/color.ts","./src/gl/renderer.ts","./src/gl/shaders.ts","./src/gl/tuning.ts","./src/ui/panel.tsx","./src/ui/slider.tsx","./src/ui/controls.ts"],"version":"5.9.3"}
