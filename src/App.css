@@ -18,7 +18,7 @@ body { margin: 0; }
 .app {
   display: grid;
   grid-template-columns: 1fr 300px;
-  grid-template-rows: 52px 1fr;
+  grid-template-rows: 52px 1fr auto;
   height: 100vh;
 }
 
@@ -73,6 +73,7 @@ button.link { background: none; border: none; padding: 0; color: var(--accent); 
 
 /* Side panel */
 .side {
+  grid-row: 2 / 4;
   background: var(--side);
   border-left: 1px solid var(--line);
   display: flex;
@@ -144,8 +145,8 @@ input[type='range']:focus-visible { outline: 2px solid var(--accent); outline-of
 .good { color: #4cd964; } .ok { color: #ffcc00; } .bad { color: #ff6b6b; }
 
 @media (max-width: 760px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: 52px 1fr auto; }
-  .side { border-left: none; border-top: 1px solid var(--line); max-height: 45vh; }
+  .app { grid-template-columns: 1fr; grid-template-rows: 52px 1fr auto auto; }
+  .side { grid-row: auto; border-left: none; border-top: 1px solid var(--line); max-height: 45vh; }
   .mode { display: none; }
 }
 
@@ -188,3 +189,16 @@ input[type='range']:focus-visible { outline: 2px solid var(--accent); outline-of
 .note p { margin: 0 0 4px; }
 .note p:last-child { margin: 0; }
 button.link.pad { padding: 10px 4px 0; }
+
+/* Photo library (filmstrip) */
+.filmstrip { grid-column: 1; grid-row: 3; border-top: 1px solid var(--line); background: var(--side); min-width: 0; }
+.film-head { display: flex; align-items: center; gap: 12px; padding: 8px 12px 0; }
+.film-note { color: var(--text); }
+.film-actions { display: flex; gap: 6px; margin-left: auto; }
+.film-actions button { padding: 4px 10px; font-size: 12px; }
+.strip { display: flex; gap: 6px; padding: 8px 12px 10px; overflow-x: auto; }
+.thumb { position: relative; flex: none; height: 68px; padding: 0; border: 2px solid transparent; border-radius: 6px; background: var(--raised); overflow: hidden; }
+.thumb img { display: block; height: 100%; width: auto; }
+.thumb.sel { border-color: #5b8cff66; }
+.thumb.on { border-color: var(--accent); }
+.thumb .dot { position: absolute; right: 4px; bottom: 4px; margin: 0; }

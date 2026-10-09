@@ -4,8 +4,10 @@ A lightweight, browser-based photo editor. The goal: apply your own Lightroom-st
 
 Edits run on the GPU using WebGL shaders, so sliders update in real time.
 
-## Features (v0.4)
+## Features (v0.5)
 
+- **Photo library:** add up to 100 photos. Each one keeps its own edits, and the strip under the editor lets you switch between them (click, or the left and right arrow keys)
+- **Copy / paste settings:** copy the edits from one photo and paste them onto others. Ctrl/Cmd-click or Shift-click the strip to pick several photos, then paste once (Ctrl/Cmd + C and Ctrl/Cmd + V work too)
 - **Presets & LUTs:** load Lightroom presets (`.xmp`) and colour looks (`.cube` 3D LUTs, with an amount slider). Settings Alterroom can't do yet are listed, not silently dropped
 - **Light:** Exposure, Contrast, Highlights, Shadows, Whites, Blacks
 - **Colour:** Temperature, Tint, Vibrance, Saturation
@@ -38,9 +40,10 @@ Then open the link Vite prints (usually http://localhost:5173).
 | `src/edit.ts` | Every setting, its default, and the edit state (sliders, curves, LUT) |
 | `src/io/xmp.ts` | Reads Lightroom `.xmp` presets (Camera Raw `crs:` settings) |
 | `src/io/cube.ts` | Reads `.cube` 3D LUTs |
+| `src/library.ts` | The photo library: what each photo remembers, the 100-photo limit, small previews |
 | `src/accuracy.ts` | Match meter: compares against a reference image using ΔE in Lab colour space |
-| `src/ui/` | Panels, sliders, colour wheel, curve editor and control definitions (ranges, help text, track colours) |
-| `src/App.tsx` | Puts it together: open, edit, before/after, export |
+| `src/ui/` | Panels, sliders, colour wheel, curve editor, photo strip and control definitions (ranges, help text, track colours) |
+| `src/App.tsx` | Puts it together: library, edit, copy/paste, before/after, export |
 
 **Edit order:** sRGB → linear ProPhoto → white balance → exposure (with highlight roll-off) → highlights/shadows (edge-aware) → whites/blacks → contrast → vibrance → saturation → sRGB → tone curve → colour mix → colour grading → LUT.
 
@@ -58,7 +61,7 @@ The target is **95%+ per slider**, tested against Adobe Camera Raw exports of JP
 - [x] v0.3 Linear ProPhoto, Temp/Tint, Highlights/Shadows/Whites/Blacks, Vibrance, beginner-friendly panels
 - [ ] Tune every slider to 95%+ match against Lightroom exports
 - [x] v0.4 `.xmp` preset import, `.cube` LUTs, colour grading wheels, tone curve, colour mix (HSL)
-- [ ] v0.5 Library of up to 100 photos, copy/paste settings
+- [x] v0.5 Library of up to 100 photos, copy/paste settings
 - [ ] v0.6 Batch export to a zip
 - [ ] v0.7 RAW and HEIC
 - [ ] v0.8 Clarity, Texture, sharpening, noise reduction, calibration, dehaze

@@ -12,8 +12,10 @@ import { Slider } from './ui/Slider'
 import { Panel } from './ui/Panel'
 import { Wheel } from './ui/Wheel'
 import { CurveEditor } from './ui/CurveEditor'
+import { Filmstrip } from './ui/Filmstrip'
 import { parseXmp, type PresetResult } from './io/xmp'
 import { parseCube } from './io/cube'
+import { MAX_PHOTOS, makeThumb, isEdited, type Photo } from './library'
 
 const COMPARE_SIZE = 800 // long side, in pixels, used for accuracy checks
 type Mode = 'beginner' | 'pro'
@@ -42,7 +44,6 @@ export default function App() {
   const frameRef = useRef(0)
   const [edit, setEdit] = useState<EditState>(defaultEdit)
   const [showBefore, setShowBefore] = useState(false)
-  const [fileName, setFileName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>('beginner')
   const [openPanel, setOpenPanel] = useState<string | null>('light')
@@ -56,6 +57,21 @@ export default function App() {
   const [matchOpen, setMatchOpen] = useState(false)
   const [reference, setReference] = useState<ImageBitmap | null>(null)
   const [match, setMatch] = useState<MatchResult | null>(null)
+
+  // Photo library. The open photo's edits live in `edit`, `disabled` and `preset` above;
+  // they are saved back into its library entry when you switch to another photo.
+  const [photos, setPhotos] = useState<Photo[]>([])
+  const [activeId, setActiveId] = useState<number | null>(null)
+  const [selected, setSelected] = useState<number[]>([])
+  const [clipboard, setClipboard] = useState<EditState | null>(null)
+  const [libraryNote, setLibraryNote] = useState<string | null>(null)
+  const photosRef = useRef<Photo[]>([])
+  const nextId = useRef(1)
+  const loadToken = useRef(0)
+
+  const fileName = photos.find((p) => p.id === activeId)?.name ?? null
+  const live = useRef({ edit, disabled, preset, activeId })
+  live.current = { edit, disabled, preset, activeId }
 
   const { adj, curves, lut } = edit
 
@@ -98,7 +114,7 @@ export default function App() {
     return () => ro.disconnect()
   }, [requestDraw])
 
-  useEffect(requestDraw, [effective, showBefore, fileName, requestDraw])
+  useEffect(requestDraw, [effective, showBefore, activeId, requestDraw])
 
   // Hold the backslash key to see the original (same shortcut as Lightroom's before/after).
   useEffect(() => {
@@ -121,21 +137,164 @@ export default function App() {
       setMatch(compare(r.renderToPixels(effective, w, h), referencePixels(reference, w, h), w, h))
     }, 150)
     return () => clearTimeout(t)
-  }, [effective, reference, fileName])
+  }, [effective, reference, activeId])
 
-  async function openFile(file: File) {
+  /** Change the library list. photosRef always holds the newest list, even before React redraws. */
+  const updatePhotos = (change: (list: Photo[]) => Photo[]) => {
+    photosRef.current = change(photosRef.current)
+    setPhotos(photosRef.current)
+  }
+
+  /** Open a library photo in the editor, loading the edits it had. */
+  async function showPhoto(id: number) {
     const r = rendererRef.current
-    if (!r) return
-    const bitmap = await createImageBitmap(file)
+    const wanted = photosRef.current.find((p) => p.id === id)
+    if (!r || !wanted) return
+    const token = ++loadToken.current
+    let bitmap: ImageBitmap
+    try {
+      bitmap = await createImageBitmap(wanted.file)
+    } catch {
+      setLibraryNote(`Could not open ${wanted.name}.`)
+      return
+    }
+    const target = photosRef.current.find((p) => p.id === id)
+    if (token !== loadToken.current || !target) { // a newer pick or a remove came first
+      bitmap.close()
+      return
+    }
     r.setImage(bitmap)
     bitmap.close()
     const stage = stageRef.current!
     r.fitTo(stage.clientWidth - 48, stage.clientHeight - 48)
-    setEdit(defaultEdit)
-    setDisabled({})
-    setPreset(null)
-    setFileName(file.name)
+    // Save the edits of the photo we are leaving, then load the edits of this one.
+    const cur = live.current
+    updatePhotos((list) => list.map((p) => (p.id === cur.activeId ? { ...p, edit: cur.edit, disabled: cur.disabled, preset: cur.preset } : p)))
+    setReference((old) => { old?.close(); return null }) // a reference belongs to one photo
+    setActiveId(id)
+    setEdit(target.edit)
+    setDisabled(target.disabled)
+    setPreset(target.preset)
+    setImportError(null)
   }
+
+  /** Add photos to the library (up to MAX_PHOTOS). The first one opens if nothing is open yet. */
+  async function addFiles(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith('image/'))
+    let openFirst = live.current.activeId === null
+    let skipped = 0
+    const failed: string[] = []
+    for (const file of images) {
+      if (photosRef.current.length >= MAX_PHOTOS) { skipped++; continue }
+      try {
+        const thumb = await makeThumb(file)
+        if (photosRef.current.length >= MAX_PHOTOS) { URL.revokeObjectURL(thumb); skipped++; continue }
+        const id = nextId.current++
+        updatePhotos((list) => [...list, { id, file, name: file.name, thumb, edit: defaultEdit, disabled: {}, preset: null }])
+        if (openFirst) {
+          openFirst = false
+          setSelected([id])
+          showPhoto(id)
+        }
+      } catch {
+        failed.push(file.name)
+      }
+    }
+    const parts: string[] = []
+    if (skipped) parts.push(`The library holds ${MAX_PHOTOS} photos, so ${skipped} ${skipped === 1 ? 'was' : 'were'} not added.`)
+    if (failed.length) parts.push(`Could not open: ${failed.join(', ')}.`)
+    setLibraryNote(parts.join(' ') || null)
+  }
+
+  /** Plain click opens a photo. Ctrl/Cmd-click adds to the selection. Shift-click selects a range. */
+  function pickPhoto(id: number, mods: { ctrl: boolean; shift: boolean }) {
+    setLibraryNote(null)
+    const list = photosRef.current
+    if (mods.shift && activeId !== null) {
+      const a = list.findIndex((p) => p.id === activeId)
+      const b = list.findIndex((p) => p.id === id)
+      setSelected(list.slice(Math.min(a, b), Math.max(a, b) + 1).map((p) => p.id))
+    } else if (mods.ctrl) {
+      setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
+    } else {
+      setSelected([id])
+      if (id !== activeId) showPhoto(id)
+    }
+  }
+
+  /** The open photo plus anything else selected. Paste and Remove act on these. */
+  const targetIds = activeId === null ? [] : [...new Set([activeId, ...selected])]
+
+  function copySettings() {
+    setClipboard(edit)
+    setLibraryNote('Settings copied.')
+  }
+
+  function pasteSettings() {
+    if (!clipboard) return
+    const ids = targetIds
+    updatePhotos((list) => list.map((p) => (ids.includes(p.id) && p.id !== activeId ? { ...p, edit: clipboard, disabled: {}, preset: null } : p)))
+    if (activeId !== null) {
+      setEdit(clipboard)
+      setDisabled({})
+      setPreset(null)
+    }
+    setLibraryNote(`Pasted to ${ids.length} ${ids.length === 1 ? 'photo' : 'photos'}.`)
+  }
+
+  function removePhotos() {
+    const ids = targetIds
+    if (!ids.length) return
+    const index = photosRef.current.findIndex((p) => p.id === activeId)
+    photosRef.current.filter((p) => ids.includes(p.id)).forEach((p) => URL.revokeObjectURL(p.thumb))
+    updatePhotos((list) => list.filter((p) => !ids.includes(p.id)))
+    const left = photosRef.current
+    loadToken.current++ // cancel a photo that was still loading
+    setLibraryNote(null)
+    if (left.length) {
+      const next = left[Math.min(index, left.length - 1)]
+      setSelected([next.id])
+      showPhoto(next.id)
+    } else {
+      setSelected([])
+      setActiveId(null)
+      setEdit(defaultEdit)
+      setDisabled({})
+      setPreset(null)
+      setReference((old) => { old?.close(); return null })
+    }
+  }
+
+  function stepPhoto(by: number) {
+    const list = photosRef.current
+    const i = list.findIndex((p) => p.id === live.current.activeId)
+    const next = list[i + by]
+    if (i >= 0 && next) pickPhoto(next.id, { ctrl: false, shift: false })
+  }
+
+  // Keyboard: Ctrl/Cmd + C copies the edits, Ctrl/Cmd + V pastes them, left and right arrows change photo.
+  const keys = useRef({ copySettings, pasteSettings, stepPhoto })
+  keys.current = { copySettings, pasteSettings, stepPhoto }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement
+      if (el?.tagName === 'INPUT' || el?.tagName === 'TEXTAREA') return
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        if (e.key === 'c' && !window.getSelection()?.toString()) { e.preventDefault(); keys.current.copySettings() }
+        if (e.key === 'v') { e.preventDefault(); keys.current.pasteSettings() }
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        if (e.key === 'ArrowLeft') keys.current.stepPhoto(-1)
+        if (e.key === 'ArrowRight') keys.current.stepPhoto(1)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const editedIds = useMemo(
+    () => new Set(photos.filter((p) => isEdited(p.id === activeId ? edit : p.edit)).map((p) => p.id)),
+    [photos, activeId, edit],
+  )
 
   async function openPreset(file: File) {
     setImportError(null)
@@ -179,7 +338,7 @@ export default function App() {
   const anyChanged = keysChanged(adj, Object.keys(defaultAdjustments) as AdjKey[]) || curvesChanged(curves) || !!lut
   const r = rendererRef.current
   const aspectMismatch = reference && r?.hasImage && Math.abs(reference.width / reference.height - r.width / r.height) > 0.01
-  const noPhoto = !fileName
+  const noPhoto = activeId === null
 
   const sliders = (list: Control[]) =>
     list
@@ -206,8 +365,8 @@ export default function App() {
         </div>
         <div className="actions">
           <label className="button">
-            Open photo
-            <input type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && openFile(e.target.files[0])} />
+            Add photos
+            <input type="file" accept="image/*" multiple hidden onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); e.target.value = '' }} />
           </label>
           <button className="primary" onClick={exportImage} disabled={noPhoto}>Export</button>
         </div>
@@ -219,23 +378,41 @@ export default function App() {
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault()
-          const f = e.dataTransfer.files[0]
-          if (!f) return
-          if (/\.xmp$/i.test(f.name)) openPreset(f)
-          else if (/\.cube$/i.test(f.name)) openLut(f)
-          else if (f.type.startsWith('image/')) openFile(f)
+          const files = Array.from(e.dataTransfer.files)
+          const xmp = files.find((f) => /\.xmp$/i.test(f.name))
+          const cube = files.find((f) => /\.cube$/i.test(f.name))
+          if (xmp) openPreset(xmp)
+          else if (cube) openLut(cube)
+          else addFiles(files)
         }}
       >
         {error && <p className="error">{error}</p>}
         {noPhoto && !error && (
           <div className="empty">
-            <p>Drop a photo here</p>
-            <p className="small">or click “Open photo” at the top</p>
+            <p>Drop photos here</p>
+            <p className="small">or click “Add photos” at the top (up to {MAX_PHOTOS})</p>
           </div>
         )}
         <canvas ref={canvasRef} hidden={noPhoto} />
         {showBefore && fileName && <span className="badge">Original</span>}
       </main>
+
+      {photos.length > 0 && (
+        <Filmstrip
+          photos={photos}
+          activeId={activeId}
+          selected={selected}
+          edited={editedIds}
+          max={MAX_PHOTOS}
+          canPaste={!!clipboard}
+          targetCount={targetIds.length}
+          note={libraryNote}
+          onPick={pickPhoto}
+          onCopy={copySettings}
+          onPaste={pasteSettings}
+          onRemove={removePhotos}
+        />
+      )}
 
       <aside className="side">
         <div className="side-scroll">
