@@ -91,6 +91,84 @@ uniform float u_vibrance;        // -1..1 × strength
 uniform float u_skinProtect;
 uniform float u_saturation;      // -1..1 × strength
 
+// --- v0.4 stages, all in sRGB display values (0..1) near the end of the edit ---
+precision highp sampler3D;
+uniform sampler2D u_curve;       // CURVE_SIZE × 1 lookup table, RGB = per-channel output
+uniform bool u_useCurve;
+uniform float u_curveSize;
+uniform bool u_useHsl;
+uniform float u_hslHue[8];       // degrees of hue shift per colour band
+uniform float u_hslSat[8];       // -1..1
+uniform float u_hslLum[8];       // stops
+uniform bool u_useGrade;
+uniform vec3 u_gTint[4];         // colour push for shadows, midtones, highlights, global
+uniform vec4 u_gLum;             // brightness push for the same four zones
+uniform float u_gPivot;          // where shadows end and highlights start (balance)
+uniform float u_gPower;          // how much the zones overlap (blending)
+uniform sampler3D u_lut;
+uniform bool u_useLut;
+uniform float u_lutSize;
+uniform float u_lutAmount;       // 0..1
+
+const float HSL_CENTRES[9] = float[9](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0);
+const vec3 LUMA709 = vec3(0.2126, 0.7152, 0.0722);
+
+vec3 rgbToHsv(vec3 c) {
+  float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b)), d = mx - mn;
+  float h = 0.0;
+  if (d > 1e-6) h = mx == c.r ? mod((c.g - c.b) / d, 6.0) : mx == c.g ? (c.b - c.r) / d + 2.0 : (c.r - c.g) / d + 4.0;
+  return vec3(h * 60.0, mx > 1e-6 ? d / mx : 0.0, mx);
+}
+vec3 hsvToRgb(vec3 hsv) {
+  vec3 k = mod(vec3(5.0, 3.0, 1.0) + hsv.x / 60.0, 6.0);
+  return hsv.z - hsv.z * hsv.y * clamp(min(k, 4.0 - k), 0.0, 1.0);
+}
+
+vec3 applyCurve(vec3 c) {
+  vec3 pos = clamp(c, 0.0, 1.0) * (u_curveSize - 1.0);
+  vec3 lo = floor(pos), f = pos - lo;
+  vec3 hi = min(lo + 1.0, u_curveSize - 1.0);
+  float r = mix(texelFetch(u_curve, ivec2(int(lo.r), 0), 0).r, texelFetch(u_curve, ivec2(int(hi.r), 0), 0).r, f.r);
+  float g = mix(texelFetch(u_curve, ivec2(int(lo.g), 0), 0).g, texelFetch(u_curve, ivec2(int(hi.g), 0), 0).g, f.g);
+  float b = mix(texelFetch(u_curve, ivec2(int(lo.b), 0), 0).b, texelFetch(u_curve, ivec2(int(hi.b), 0), 0).b, f.b);
+  return vec3(r, g, b);
+}
+
+// Colour mix (HSL): 8 colour bands that blend smoothly into each other, like Lightroom's HSL panel.
+vec3 applyHsl(vec3 c) {
+  vec3 hsv = rgbToHsv(c);
+  float h = hsv.x;
+  int i = 0;
+  for (int k = 0; k < 8; k++) if (h >= HSL_CENTRES[k]) i = k;
+  float t = smoothstep(0.0, 1.0, (h - HSL_CENTRES[i]) / (HSL_CENTRES[i + 1] - HSL_CENTRES[i]));
+  int j = (i + 1) % 8;
+  float wi = 1.0 - t, wj = t;
+  float colourful = smoothstep(0.0, 0.15, hsv.y);  // greys have no real hue, so leave them alone
+  float dh = (wi * u_hslHue[i] + wj * u_hslHue[j]) * colourful;
+  float ds = (wi * u_hslSat[i] + wj * u_hslSat[j]) * colourful;
+  float dl = (wi * u_hslLum[i] + wj * u_hslLum[j]) * colourful * hsv.y;
+  hsv.x = mod(h + dh, 360.0);
+  hsv.y = clamp(hsv.y * (1.0 + ds), 0.0, 1.0);
+  hsv.z = hsv.z * exp2(dl);
+  return hsvToRgb(hsv);
+}
+
+// Colour grading: tint shadows, midtones and highlights separately (the three wheels), plus a global tint.
+vec3 applyGrade(vec3 c) {
+  float y = clamp(dot(c, LUMA709), 0.0, 1.0);
+  float ws = pow(clamp(1.0 - y / u_gPivot, 0.0, 1.0), u_gPower);
+  float wh = pow(clamp((y - u_gPivot) / (1.0 - u_gPivot), 0.0, 1.0), u_gPower);
+  float wm = clamp(1.0 - ws - wh, 0.0, 1.0);
+  c += u_gTint[0] * ws + u_gTint[1] * wm + u_gTint[2] * wh + u_gTint[3];
+  c += u_gLum.x * ws + u_gLum.y * wm + u_gLum.z * wh + u_gLum.w;
+  return c;
+}
+
+vec3 applyLut(vec3 c) {
+  vec3 uvw = clamp(c, 0.0, 1.0) * ((u_lutSize - 1.0) / u_lutSize) + 0.5 / u_lutSize;
+  return mix(c, texture(u_lut, uvw).rgb, u_lutAmount);
+}
+
 vec3 applyExposure(vec3 lin) {
   float m = exp2(u_exposure);
   vec3 x = lin * m;
@@ -158,5 +236,10 @@ void main() {
   c = max(mix(vec3(luma), c, 1.0 + u_saturation), 0.0);
 
   vec3 outLin = clamp(u_toOutput * c, 0.0, 1.0);
-  outColor = vec4(linearToSrgb(outLin), 1.0);
+  vec3 d = linearToSrgb(outLin);
+  if (u_useCurve) d = applyCurve(d);
+  if (u_useHsl) d = applyHsl(d);
+  if (u_useGrade) d = clamp(applyGrade(d), 0.0, 1.0);
+  if (u_useLut) d = applyLut(d);
+  outColor = vec4(clamp(d, 0.0, 1.0), 1.0);
 }`

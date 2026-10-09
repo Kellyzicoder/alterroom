@@ -4,15 +4,17 @@ A lightweight, browser-based photo editor. The goal: apply your own Lightroom-st
 
 Edits run on the GPU using WebGL shaders, so sliders update in real time.
 
-## Features (v0.3)
+## Features (v0.4)
 
+- **Presets & LUTs:** load Lightroom presets (`.xmp`) and colour looks (`.cube` 3D LUTs, with an amount slider). Settings Alterroom can't do yet are listed, not silently dropped
 - **Light:** Exposure, Contrast, Highlights, Shadows, Whites, Blacks
 - **Colour:** Temperature, Tint, Vibrance, Saturation
-- Edits in **linear ProPhoto RGB**, the same working space Lightroom uses
-- **Halo-free Highlights and Shadows** using an edge-aware guided filter
-- Beginner / Pro modes, collapsible panels, coloured slider tracks, a tip for every slider
+- **Colour mix:** Hue, Saturation and Luminance for 8 colours
+- **Colour grading:** wheels for Shadows, Midtones, Highlights and All, with Luminance, Blending and Balance
+- **Tone curve (Pro):** draggable RGB / Red / Green / Blue point curves plus a 4-region parametric curve
+- Edits in **linear ProPhoto RGB**, with **halo-free Highlights and Shadows** (edge-aware guided filter)
+- Beginner / Pro modes, collapsible panels, coloured slider tracks, a tip for every control
 - Eye button per panel to switch its edits off; hold `\` or the button to see the original
-- Smooth on large photos: preview at screen size, export at full resolution
 - **Lightroom match meter:** load a Lightroom or Camera Raw export and see how closely Alterroom matches it
 
 ## Getting started
@@ -32,11 +34,15 @@ Then open the link Vite prints (usually http://localhost:5173).
 | `src/gl/renderer.ts` | Sets up WebGL, builds the mask once per photo, draws the preview and exports |
 | `src/gl/color.ts` | Colour maths: sRGB ↔ ProPhoto matrices and Bradford white balance |
 | `src/gl/tuning.ts` | Tuning knobs that control how closely each slider matches Lightroom |
+| `src/gl/curve.ts` | Builds the tone curve lookup table (monotone cubic spline + parametric regions) |
+| `src/edit.ts` | Every setting, its default, and the edit state (sliders, curves, LUT) |
+| `src/io/xmp.ts` | Reads Lightroom `.xmp` presets (Camera Raw `crs:` settings) |
+| `src/io/cube.ts` | Reads `.cube` 3D LUTs |
 | `src/accuracy.ts` | Match meter: compares against a reference image using ΔE in Lab colour space |
-| `src/ui/` | Panels, sliders and slider definitions (ranges, help text, track colours) |
+| `src/ui/` | Panels, sliders, colour wheel, curve editor and control definitions (ranges, help text, track colours) |
 | `src/App.tsx` | Puts it together: open, edit, before/after, export |
 
-**Edit order:** sRGB → linear ProPhoto → white balance → exposure (with highlight roll-off) → highlights/shadows (edge-aware) → whites/blacks → contrast → vibrance → saturation → sRGB.
+**Edit order:** sRGB → linear ProPhoto → white balance → exposure (with highlight roll-off) → highlights/shadows (edge-aware) → whites/blacks → contrast → vibrance → saturation → sRGB → tone curve → colour mix → colour grading → LUT.
 
 **Highlights/Shadows** use a guided filter (He et al., 2010) on a small copy of the photo's log brightness. That gives a smooth brightness map that still stops at edges, so a whole region can be brightened without glowing halos.
 
@@ -51,7 +57,7 @@ The target is **95%+ per slider**, tested against Adobe Camera Raw exports of JP
 - [x] v0.2 Screen-size preview + full-res export, Lightroom ranges, match meter
 - [x] v0.3 Linear ProPhoto, Temp/Tint, Highlights/Shadows/Whites/Blacks, Vibrance, beginner-friendly panels
 - [ ] Tune every slider to 95%+ match against Lightroom exports
-- [ ] v0.4 `.xmp` preset import, `.cube` LUTs, colour grading wheels, tone curve, HSL
+- [x] v0.4 `.xmp` preset import, `.cube` LUTs, colour grading wheels, tone curve, colour mix (HSL)
 - [ ] v0.5 Library of up to 100 photos, copy/paste settings
 - [ ] v0.6 Batch export to a zip
 - [ ] v0.7 RAW and HEIC

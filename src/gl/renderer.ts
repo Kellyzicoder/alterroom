@@ -1,23 +1,23 @@
 import { vertexSrc, lumSrc, blurSrc, coeffSrc, mainSrc } from './shaders'
+import type { EditState, Lut } from '../edit'
+import { HSL_COLOURS, GRADE_ZONES } from '../edit'
+import { buildCurveTable, CURVE_SIZE } from './curve'
 import { tuning, solveShoulder } from './tuning'
 import { SRGB_TO_PROPHOTO, PROPHOTO_TO_SRGB, PROPHOTO_LUMA, whiteBalance, mul, columnMajor } from './color'
 
-/** Slider values in Lightroom units. */
-export type Adjustments = {
-  temp: number // -100..+100 (relative, as Lightroom shows for JPEGs)
-  tint: number // -100..+100
-  exposure: number // -5..+5 stops
-  contrast: number // -100..+100
-  highlights: number
-  shadows: number
-  whites: number
-  blacks: number
-  vibrance: number
-  saturation: number
-}
+export type { Adjustments } from '../edit'
+export { defaultAdjustments } from '../edit'
 
-export const defaultAdjustments: Adjustments = {
-  temp: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, vibrance: 0, saturation: 0,
+/** Colour grading tint strength at Saturation 100, and brightness push at Luminance ±100 (starting guesses). */
+const GRADE_TINT = 0.3
+const GRADE_LUM = 0.15
+/** Colour mix: hue shift in degrees at ±100, and brightness change in stops at ±100. */
+const HSL_HUE_DEG = 30
+const HSL_LUM_STOPS = 1
+
+function hueToRgb(h: number): [number, number, number] {
+  const f = (n: number) => { const k = (n + h / 60) % 6; return 1 - Math.max(0, Math.min(k, 4 - k, 1)) }
+  return [f(5), f(3), f(1)]
 }
 
 type Program = { prog: WebGLProgram; u: (name: string) => WebGLUniformLocation | null }
@@ -48,6 +48,13 @@ export class Renderer {
   private mask: Target[] = [] // ping-pong targets on the small image
   private floatTargets: boolean
   private shoulderCache = { exposure: NaN, knee: NaN, a: 1 }
+  private curveTex: WebGLTexture
+  private curveKey = ''
+  private curveActive = false
+  private lutTex: WebGLTexture
+  private lutLoaded: Lut | null = null
+  private blank2D: WebGLTexture
+  private blank3D: WebGLTexture
   width = 0
   height = 0
 
@@ -71,6 +78,46 @@ export class Renderer {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW)
     gl.enableVertexAttribArray(0)
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
+
+    // Small placeholder textures so every sampler always has something bound.
+    this.blank2D = gl.createTexture()!
+    gl.bindTexture(gl.TEXTURE_2D, this.blank2D)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4))
+    this.blank3D = gl.createTexture()!
+    gl.bindTexture(gl.TEXTURE_3D, this.blank3D)
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4))
+    this.curveTex = gl.createTexture()!
+    this.lutTex = gl.createTexture()!
+  }
+
+  /** Rebuild the curve lookup table only when the curve settings actually change. */
+  private syncCurve(edit: EditState) {
+    const a = edit.adj
+    const amounts: [number, number, number, number] = [a.curveShadows, a.curveDarks, a.curveLights, a.curveHighlights]
+    const key = JSON.stringify([edit.curves, amounts])
+    if (key === this.curveKey) return
+    this.curveKey = key
+    const table = buildCurveTable(edit.curves, amounts)
+    this.curveActive = !!table
+    if (!table) return
+    const gl = this.gl
+    gl.bindTexture(gl.TEXTURE_2D, this.curveTex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, CURVE_SIZE, 1, 0, gl.RGBA, gl.FLOAT, table)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+  }
+
+  /** Upload a LUT to the GPU as a 3D texture (only when a different one is loaded). */
+  private syncLut(lut: Lut | null) {
+    if (lut === this.lutLoaded) return
+    this.lutLoaded = lut
+    if (!lut) return
+    const gl = this.gl
+    gl.bindTexture(gl.TEXTURE_3D, this.lutTex)
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, lut.size, lut.size, lut.size, 0, gl.RGB, gl.FLOAT, lut.data)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE)
   }
 
   private program(fragmentSrc: string): Program {
@@ -192,9 +239,12 @@ export class Renderer {
     this.canvas.height = Math.round(cssH * dpr)
   }
 
-  private drawMain(adj: Adjustments, bypass: boolean, to: Target | null, w: number, h: number) {
+  private drawMain(edit: EditState, bypass: boolean, to: Target | null, w: number, h: number) {
     const gl = this.gl
     const p = this.main
+    const adj = edit.adj
+    this.syncCurve(edit)
+    this.syncLut(edit.lut)
     if (this.shoulderCache.exposure !== adj.exposure || this.shoulderCache.knee !== tuning.knee) {
       this.shoulderCache = { exposure: adj.exposure, knee: tuning.knee, a: solveShoulder(adj.exposure, tuning.knee) }
     }
@@ -205,8 +255,9 @@ export class Renderer {
       gl.uniform1i(p.u('u_image'), 0)
       const useMask = this.mask.length === 2
       gl.activeTexture(gl.TEXTURE1)
-      gl.bindTexture(gl.TEXTURE_2D, useMask ? this.mask[1].tex : null)
+      gl.bindTexture(gl.TEXTURE_2D, useMask ? this.mask[1].tex : this.blank2D)
       gl.uniform1i(p.u('u_mask'), 1)
+      if (!useMask) gl.bindTexture(gl.TEXTURE_2D, this.blank2D)
       gl.uniform1i(p.u('u_useMask'), useMask ? 1 : 0)
       gl.uniform1i(p.u('u_bypass'), bypass ? 1 : 0)
       gl.uniformMatrix3fv(p.u('u_toWorking'), false, columnMajor(toWorking))
@@ -227,21 +278,60 @@ export class Renderer {
       gl.uniform1f(p.u('u_vibrance'), (adj.vibrance / 100) * tuning.vibranceStrength)
       gl.uniform1f(p.u('u_skinProtect'), tuning.skinProtect)
       gl.uniform1f(p.u('u_saturation'), (adj.saturation / 100) * (adj.saturation >= 0 ? tuning.saturationStrength : 1))
+
+      // Tone curve
+      gl.activeTexture(gl.TEXTURE2)
+      gl.bindTexture(gl.TEXTURE_2D, this.curveActive ? this.curveTex : this.blank2D)
+      gl.uniform1i(p.u('u_curve'), 2)
+      gl.uniform1i(p.u('u_useCurve'), this.curveActive ? 1 : 0)
+      gl.uniform1f(p.u('u_curveSize'), CURVE_SIZE)
+
+      // Colour mix (HSL)
+      const hue = HSL_COLOURS.map((c) => (adj[`hue_${c}`] / 100) * HSL_HUE_DEG)
+      const sat = HSL_COLOURS.map((c) => adj[`sat_${c}`] / 100)
+      const lum = HSL_COLOURS.map((c) => (adj[`lum_${c}`] / 100) * HSL_LUM_STOPS)
+      gl.uniform1i(p.u('u_useHsl'), [...hue, ...sat, ...lum].some((v) => v !== 0) ? 1 : 0)
+      gl.uniform1fv(p.u('u_hslHue'), hue)
+      gl.uniform1fv(p.u('u_hslSat'), sat)
+      gl.uniform1fv(p.u('u_hslLum'), lum)
+
+      // Colour grading
+      const tints = GRADE_ZONES.flatMap((z) => {
+        const rgb = hueToRgb(adj[`g_${z}_hue`])
+        const y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+        const k = (adj[`g_${z}_sat`] / 100) * GRADE_TINT
+        return rgb.map((v) => (v - y) * k)
+      })
+      const lums = GRADE_ZONES.map((z) => (adj[`g_${z}_lum`] / 100) * GRADE_LUM)
+      gl.uniform1i(p.u('u_useGrade'), [...tints, ...lums].some((v) => v !== 0) ? 1 : 0)
+      gl.uniform3fv(p.u('u_gTint'), tints)
+      gl.uniform4fv(p.u('u_gLum'), lums)
+      gl.uniform1f(p.u('u_gPivot'), 0.5 - 0.2 * (adj.g_balance / 100))
+      gl.uniform1f(p.u('u_gPower'), 2.5 + (0.6 - 2.5) * (adj.g_blending / 100))
+
+      // LUT
+      gl.activeTexture(gl.TEXTURE3)
+      const lut = edit.lut
+      gl.bindTexture(gl.TEXTURE_3D, lut ? this.lutTex : this.blank3D)
+      gl.uniform1i(p.u('u_lut'), 3)
+      gl.uniform1i(p.u('u_useLut'), lut && adj.lutAmount > 0 ? 1 : 0)
+      gl.uniform1f(p.u('u_lutSize'), lut ? lut.size : 1)
+      gl.uniform1f(p.u('u_lutAmount'), adj.lutAmount / 100)
     })
     gl.activeTexture(gl.TEXTURE0)
   }
 
   /** Draw the preview on screen. */
-  render(adj: Adjustments, bypass = false) {
+  render(edit: EditState, bypass = false) {
     if (!this.texture) return
-    this.drawMain(adj, bypass, null, this.canvas.width, this.canvas.height)
+    this.drawMain(edit, bypass, null, this.canvas.width, this.canvas.height)
   }
 
   /** Render offscreen at w×h and return the pixels (RGBA, top row first). */
-  renderToPixels(adj: Adjustments, w = this.width, h = this.height): Uint8ClampedArray {
+  renderToPixels(edit: EditState, w = this.width, h = this.height): Uint8ClampedArray {
     const gl = this.gl
     const t = this.target(w, h, false)
-    this.drawMain(adj, false, t, w, h)
+    this.drawMain(edit, false, t, w, h)
     const out = new Uint8ClampedArray(w * h * 4)
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -250,8 +340,8 @@ export class Renderer {
   }
 
   /** Export the edit at full resolution as a JPEG. */
-  async export(adj: Adjustments, quality = 0.95): Promise<Blob> {
-    const px = this.renderToPixels(adj)
+  async export(edit: EditState, quality = 0.95): Promise<Blob> {
+    const px = this.renderToPixels(edit)
     const c = new OffscreenCanvas(this.width, this.height)
     const ctx = c.getContext('2d')!
     const img = ctx.createImageData(this.width, this.height)

@@ -148,3 +148,43 @@ input[type='range']:focus-visible { outline: 2px solid var(--accent); outline-of
   .side { border-left: none; border-top: 1px solid var(--line); max-height: 45vh; }
   .mode { display: none; }
 }
+
+/* Tabs inside panels (Colour mix, Colour grading, Tone curve) */
+.tabs { display: flex; background: var(--raised); border-radius: 8px; padding: 2px; gap: 2px; }
+.tabs button { flex: 1; border: none; background: none; padding: 5px 2px; border-radius: 6px; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.tabs button.on { background: var(--line); color: var(--text); }
+.tabs .dot { margin-left: 3px; width: 5px; height: 5px; vertical-align: 2px; }
+
+/* Colour wheel */
+.wheel-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 4px 0; }
+.wheel {
+  position: relative;
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
+  /* grey in the middle fading out to full colour at the edge; hue runs counter-clockwise from red on the right */
+  background:
+    radial-gradient(circle, #8a8a8a 0%, #8a8a8a00 72%),
+    conic-gradient(from 90deg, #f33, #f3f, #33f, #3ff, #3f3, #ff3, #f33);
+  box-shadow: inset 0 0 0 1px #0006, 0 0 0 1px var(--line);
+}
+.wheel.disabled { opacity: 0.4; cursor: default; }
+.wheel-centre { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: #0008; }
+.wheel-dot {
+  position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+  background: transparent; border: 2px solid #fff; box-shadow: 0 0 0 1px #000a; pointer-events: none;
+}
+.wheel-readout { font-variant-numeric: tabular-nums; }
+
+/* Tone curve */
+.curve { display: block; background: #0d0d0f; border-radius: 8px; box-shadow: 0 0 0 1px var(--line); cursor: crosshair; touch-action: none; aspect-ratio: 1; }
+.curve.disabled { opacity: 0.4; cursor: default; }
+
+/* Presets & LUTs */
+.row-tight { display: flex; gap: 8px; }
+.row-tight .button { flex: 1; font-size: 12px; padding: 7px 8px; }
+.row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.note { background: var(--raised); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; }
+.note p { margin: 0 0 4px; }
+.note p:last-child { margin: 0; }
+button.link.pad { padding: 10px 4px 0; }

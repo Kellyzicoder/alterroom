@@ -11,7 +11,8 @@ type Props = {
 
 /** One labelled slider: coloured track, typed value, dot when changed, double-click to reset. */
 export function Slider({ control: c, value, disabled, onChange, onHint }: Props) {
-  const changed = value !== 0
+  const def = c.def ?? 0
+  const changed = value !== def
   const shown = Number(value.toFixed(c.digits))
   return (
     <div
@@ -20,7 +21,7 @@ export function Slider({ control: c, value, disabled, onChange, onHint }: Props)
       onPointerLeave={() => onHint(null)}
     >
       <div className="slider-head">
-        <span className="label" onDoubleClick={() => onChange(0)}>
+        <span className="label" onDoubleClick={() => onChange(def)}>
           {c.label}
           {changed && <i className="dot" aria-label="changed" />}
         </span>
@@ -50,7 +51,7 @@ export function Slider({ control: c, value, disabled, onChange, onHint }: Props)
         aria-label={c.label}
         style={{ ['--track' as string]: c.track ?? NEUTRAL_TRACK }}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        onDoubleClick={() => onChange(0)}
+        onDoubleClick={() => onChange(def)}
       />
     </div>
   )
