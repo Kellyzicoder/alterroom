@@ -1,34 +1,30 @@
 /**
  * Knobs that control how closely each slider matches Lightroom.
- * Tune these against Lightroom / Camera Raw reference exports using the match meter in the app.
- * They are starting guesses until real reference images have been measured.
+ * Exposure and Contrast don't need knobs: they use Lightroom's measured curves (measured.ts).
+ * The values below are set by the auto-tuner (tools/tune) against Lightroom reference exports.
  */
 export const tuning = {
-  // Exposure
-  /** Linear-light value where exposure highlight roll-off begins (0..1). */
-  knee: 0.7,
+  /** 1: Highlights, Shadows, Whites and Blacks work on scene brightness, like Exposure (matches better). 0: on display brightness. */
+  sceneTone: 1,
 
-  // Contrast
-  /** How much of the S-curve Contrast +100 applies (0..1). */
-  contrastStrength: 0.5,
-  /** Contrast −100 blend toward the flatter inverse S-curve (0..1). */
-  contrastStrengthNeg: 0.5,
-
-  // Highlights / Shadows (adaptive, uses the edge-aware mask)
-  /** Stops of brightening/darkening at Shadows ±100, in the darkest areas. */
-  shadowsStops: 1.6,
-  /** Stops of brightening/darkening at Highlights ±100, in the brightest areas. */
-  highlightsStops: 1.6,
-  /** Zone edges on the 0..1 brightness scale (Adobe: shadows 10–30%, highlights 70–90%). */
-  shadowsZone: [0.1, 0.5] as [number, number],
-  highlightsZone: [0.55, 0.9] as [number, number],
-
-  // Whites / Blacks (per-pixel, near the ends of the range)
-  whitesStops: 1.0,
-  blacksStops: 1.2,
-  /** Where Whites starts to act, and where Blacks stops acting (0..1 brightness). */
-  whitesFrom: 0.6,
-  blacksTo: 0.4,
+  // Highlights / Shadows / Whites / Blacks. Lightroom treats + and − differently, so each side has its own knobs.
+  // Stops = how much brighter (or darker) at ±100. Zones are on the 0..1 brightness scale.
+  /** Highlights: fade in from the first zone value to the second. */
+  highlightsUp: 3.22,
+  highlightsDown: 2.88,
+  highlightsZoneUp: [-0.051, 1.292] as [number, number],
+  highlightsZoneDown: [-0.084, 1.32] as [number, number],
+  /** Shadows: fade out from the first zone value to the second. */
+  shadowsUp: 4.17,
+  shadowsDown: 4.18,
+  shadowsZoneUp: [-0.267, 0.237] as [number, number],
+  shadowsZoneDown: [-0.233, 0.235] as [number, number],
+  /** Whites − side (the + side is a measured curve): starts to act at this brightness. */
+  whitesDown: 0.42,
+  whitesFromDown: 0.043,
+  /** Blacks + side (the − side is a measured curve): stops acting at this brightness. */
+  blacksUp: 0.764,
+  blacksToUp: 0.92,
 
   // Edge-aware mask (guided filter)
   /** Long side of the small image the mask is built from, in pixels. */
@@ -39,36 +35,20 @@ export const tuning = {
   maskEdge: 0.015,
 
   // White balance (relative sliders for JPEGs, −100..+100)
-  /** Mired shift per Temp step. 100 steps ≈ 5000 K → 10000 K "assumed light". */
-  miredPerStep: 1.0,
+  /** Mired shift per Temp step (of the "assumed light"). */
+  miredPerStep: 2.95,
+  /** Colour temperature (kelvin) the Temp slider starts from. */
+  wbBaseK: 6224,
+  /** Colour temperature (kelvin) the Tint slider works at. */
+  tintK: 5003,
   /** Green–magenta shift per Tint step (Δuv). */
-  duvPerStep: 0.00033,
+  duvPerStep: 0.000373,
 
   // Colour
   /** Saturation +100 multiplier on colourfulness (1 = doubles it). */
   saturationStrength: 1.0,
   /** Vibrance ±100 strength. */
-  vibranceStrength: 1.0,
+  vibranceStrength: 0.78,
   /** How much skin tones are protected from Vibrance (0..1). */
-  skinProtect: 0.5,
-}
-
-/**
- * The highlight roll-off curve must meet the straight part smoothly (same slope at the knee).
- * That needs a steepness "a" with a / (1 - e^-a) = (m - k) / (1 - k), solved here with Newton's method.
- */
-export function solveShoulder(exposure: number, knee: number): number {
-  const m = Math.pow(2, exposure)
-  const target = (m - knee) / (1 - knee)
-  if (target <= 1.0001) return 1e-4
-  let a = 2 * target
-  for (let i = 0; i < 30; i++) {
-    const e = Math.exp(-a)
-    const f = a / (1 - e) - target
-    const df = (1 - e - a * e) / ((1 - e) * (1 - e))
-    const next = a - f / df
-    if (Math.abs(next - a) < 1e-7) return next
-    a = next > 0 ? next : a / 2
-  }
-  return a
+  skinProtect: 0,
 }

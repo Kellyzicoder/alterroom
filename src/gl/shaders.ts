@@ -16,6 +16,7 @@ out vec4 outColor;
 vec3 srgbToLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
 vec3 linearToSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
 float linearToSrgb1(float c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055; }
+float srgbToLinear1(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 const vec3 SRGB_LUMA = vec3(0.2126729, 0.7151522, 0.072175);
 `
 
@@ -62,8 +63,8 @@ void main() {
 
 // ---------------------------------------------------------------------------------------------
 // Main edit. Runs once per pixel, every time a slider moves.
-// Order: to linear ProPhoto → white balance → exposure → highlights/shadows → whites/blacks
-//        → contrast → vibrance → saturation → back to sRGB for the screen.
+// Order: to linear ProPhoto → expand to scene brightness → white balance → exposure → compress
+//        → highlights/shadows → whites/blacks → contrast → vibrance → saturation → back to sRGB.
 // ---------------------------------------------------------------------------------------------
 export const mainSrc = common + `
 uniform sampler2D u_image;
@@ -71,13 +72,18 @@ uniform sampler2D u_mask;        // blurred guided-filter coefficients (a, b)
 uniform bool u_useMask;
 uniform bool u_bypass;
 
-uniform mat3 u_toWorking;        // sRGB linear → ProPhoto linear, with white balance built in
+uniform mat3 u_toWorking;        // sRGB linear → ProPhoto linear
 uniform mat3 u_toOutput;         // ProPhoto linear → sRGB linear
 uniform vec3 u_luma;             // ProPhoto luminance weights
 
 uniform float u_exposure;        // stops
-uniform float u_shoulderA;
-uniform float u_knee;
+uniform mat3 u_wb;               // white balance, applied to scene brightness
+uniform bool u_useScene;         // white balance or exposure is set
+uniform sampler2D u_tone;        // measured tone tables: R expand, G compress, B contrast
+uniform float u_toneSize;
+uniform bool u_useContrast;       // Contrast or Whites (+ side) is set
+uniform bool u_useBlacksCurve;   // Blacks (− side) is set
+uniform bool u_sceneTone;       // Highlights/Shadows/Whites/Blacks act on scene brightness (before the curve goes back)
 uniform float u_shadows;         // stops at full strength (slider/100 × tuning)
 uniform float u_highlights;
 uniform vec2  u_shadowsZone;
@@ -86,7 +92,6 @@ uniform float u_whites;
 uniform float u_blacks;
 uniform float u_whitesFrom;
 uniform float u_blacksTo;
-uniform float u_contrast;        // -1..1 × strength
 uniform float u_vibrance;        // -1..1 × strength
 uniform float u_skinProtect;
 uniform float u_saturation;      // -1..1 × strength
@@ -169,20 +174,28 @@ vec3 applyLut(vec3 c) {
   return mix(c, texture(u_lut, uvw).rgb, u_lutAmount);
 }
 
-vec3 applyExposure(vec3 lin) {
-  float m = exp2(u_exposure);
-  vec3 x = lin * m;
-  if (u_exposure <= 0.0) return x;
-  float k = u_knee;
-  vec3 t = clamp((x - k) / (m - k), 0.0, 1.0);
-  vec3 rolled = k + (1.0 - k) * (1.0 - exp(-u_shoulderA * t)) / (1.0 - exp(-u_shoulderA));
-  return mix(x, rolled, step(k, x));
+// Measured tone tables (see tone.ts). k: 0 expand, 1 compress, 2 whites + contrast, 3 blacks.
+float toneAt(float x, int k) {
+  float p = clamp(x, 0.0, 1.0) * (u_toneSize - 1.0);
+  int i = int(floor(p));
+  int j = min(i + 1, int(u_toneSize) - 1);
+  return mix(texelFetch(u_tone, ivec2(i, 0), 0)[k], texelFetch(u_tone, ivec2(j, 0), 0)[k], p - float(i));
 }
-
-vec3 applyContrast(vec3 c) {
-  if (u_contrast >= 0.0) return mix(c, c * c * (3.0 - 2.0 * c), u_contrast);
-  vec3 flat1 = 0.5 - sin(asin(clamp(1.0 - 2.0 * c, -1.0, 1.0)) / 3.0);
-  return mix(c, flat1, -u_contrast);
+/** One tone step on a single linear value. */
+float tone1(float v, int k) {
+  if (k == 0) return toneAt(linearToSrgb1(clamp(v, 0.0, 1.0)), 0);          // linear → scene
+  if (k == 1) return srgbToLinear1(toneAt(pow(clamp(v, 0.0, 1.0), 1.0 / 3.0), 1)); // scene → linear
+  return srgbToLinear1(toneAt(linearToSrgb1(clamp(v, 0.0, 1.0)), k));       // 2: whites + contrast, 3: blacks
+}
+/**
+ * Apply a tone curve without shifting hue (Adobe's method from the DNG SDK): the curve is applied to
+ * the largest and smallest channel, and the middle one keeps its place between them.
+ */
+vec3 hueTone(vec3 c, int k) {
+  float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
+  float hi = tone1(mx, k), lo = tone1(mn, k);
+  if (mx - mn < 1e-7) return vec3(hi);
+  return lo + (hi - lo) * (c - mn) / (mx - mn);
 }
 
 float hueOf(vec3 c) {
@@ -197,31 +210,44 @@ void main() {
   if (u_bypass) { outColor = src; return; }
 
   vec3 lin = srgbToLinear(src.rgb);
-  vec3 c = u_toWorking * lin;                       // linear ProPhoto, white-balanced
-  c = applyExposure(c);
+  vec3 c = u_toWorking * lin;                       // linear ProPhoto
+
+  // White balance and exposure: undo the JPEG's tone curve, multiply, put the curve back.
+  bool toneSliders = u_shadows != 0.0 || u_highlights != 0.0 || u_whites != 0.0 || u_blacks != 0.0;
+  bool scene = u_useScene || (u_sceneTone && toneSliders);
+  if (scene) {
+    c = hueTone(c, 0);
+    c = max(u_wb * c, 0.0) * exp2(u_exposure);
+    if (!u_sceneTone) c = hueTone(c, 1);
+  }
+  bool inScene = scene && u_sceneTone;
 
   // Highlights / Shadows: brighten or darken whole regions, judged by the smooth mask.
   if (u_shadows != 0.0 || u_highlights != 0.0) {
     float L = log2(max(dot(lin, SRGB_LUMA), 1.0 / 4096.0));
     float baseLog = L;
     if (u_useMask) { vec2 ab = texture(u_mask, v_uv).rg; baseLog = ab.x * L + ab.y; }
-    float t = clamp(linearToSrgb1(exp2(baseLog + u_exposure)), 0.0, 1.0);  // region brightness 0..1
+    float sceneY = toneAt(linearToSrgb1(min(exp2(baseLog), 1.0)), 0) * exp2(u_exposure);
+    float t = toneAt(pow(clamp(sceneY, 0.0, 1.0), 1.0 / 3.0), 1);            // region brightness 0..1
     float ws = 1.0 - smoothstep(u_shadowsZone.x, u_shadowsZone.y, t);
     float wh = smoothstep(u_highlightsZone.x, u_highlightsZone.y, t);
     c *= exp2(u_shadows * ws + u_highlights * wh);
   }
 
-  // Whites / Blacks: move the very ends of the range.
+  // Whites (− side) / Blacks (+ side): move the ends of the range. The other sides are measured curves (below).
   if (u_whites != 0.0 || u_blacks != 0.0) {
-    float y = clamp(linearToSrgb1(max(dot(c, u_luma), 0.0)), 0.0, 1.0);
+    float lum = max(dot(c, u_luma), 0.0);
+    float y = inScene ? toneAt(pow(min(lum, 1.0), 1.0 / 3.0), 1) : clamp(linearToSrgb1(lum), 0.0, 1.0);
     c *= exp2(u_whites * smoothstep(u_whitesFrom, 1.0, y) + u_blacks * (1.0 - smoothstep(0.0, u_blacksTo, y)));
   }
+  if (inScene) c = hueTone(max(c, 0.0), 1);
 
-  // Contrast: S-curve in "Melissa RGB" (ProPhoto colours, sRGB curve), like Lightroom's readouts.
+  // Blacks (− side), Whites (+ side) and Contrast: Lightroom's measured curves for these slider values.
   c = max(c, 0.0);
-  if (u_contrast != 0.0) c = srgbToLinear(applyContrast(linearToSrgb(clamp(c, 0.0, 1.0))));
+  if (u_useBlacksCurve) c = vec3(tone1(c.r, 3), tone1(c.g, 3), tone1(c.b, 3));
+  if (u_useContrast) c = hueTone(min(c, 1.0), 2);
 
-  // Vibrance: boosts dull colours more than rich ones, and goes easy on skin tones.
+  // Vibrance: boosts dull colours more than rich ones (skin protection is a tuning knob, currently off).
   float luma = dot(c, u_luma);
   if (u_vibrance != 0.0) {
     float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
@@ -232,8 +258,13 @@ void main() {
     c = max(mix(vec3(luma), c, 1.0 + amount), 0.0);
   }
 
-  // Saturation: every colour equally. −100 gives exact black and white.
-  c = max(mix(vec3(luma), c, 1.0 + u_saturation), 0.0);
+  // Saturation: every colour equally, on scene brightness (measured: matches Lightroom best).
+  // −100 gives exact black and white.
+  if (u_saturation != 0.0) {
+    c = hueTone(c, 0);
+    c = max(mix(vec3(dot(c, u_luma)), c, 1.0 + u_saturation), 0.0);
+    c = hueTone(c, 1);
+  }
 
   vec3 outLin = clamp(u_toOutput * c, 0.0, 1.0);
   vec3 d = linearToSrgb(outLin);

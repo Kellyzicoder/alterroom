@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tune": "node tools/tune/tune.cjs",
+    "tune:score": "node tools/tune/score.cjs",
+    "tune:measure": "python3 tools/tune/measure.py"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -16,6 +19,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "playwright": "^1.48.0",
     "typescript": "^5.5.4",
     "vite": "^5.4.0"
   }

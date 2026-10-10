@@ -196,3 +196,84 @@ button.link.pad { padding: 10px 4px 0; }
 .mini-mid { grid-column: 1 / -1; }
 .mini-label { font-size: 12px; color: var(--muted); }
 .tabs button svg { vertical-align: -2px; }
+
+/* --- Movable panels ------------------------------------------------------------------------ */
+
+/* Drag the left edge of the sidebar to resize it */
+.side { position: relative; }
+.side-resize {
+  position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; z-index: 5;
+  cursor: col-resize; touch-action: none;
+}
+.side-resize:hover, .side-resize:active { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }
+
+/* Drag grip on each panel header, and the line that shows where it will land */
+.grip { display: flex; align-items: center; padding: 6px 4px 6px 0; color: var(--muted); cursor: grab; opacity: 0.5; }
+.panel-section header:hover .grip { opacity: 1; }
+.grip:active { cursor: grabbing; }
+.panel-section.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.drop-end { min-height: 14px; }
+.drop-end.active { box-shadow: inset 0 2px 0 var(--accent); }
+
+/* Floating (detached) panels */
+.floating {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  background: var(--side);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px #000a, 0 0 0 1px #0006;
+  resize: both;
+  overflow: hidden;
+  min-width: 240px;
+  min-height: 160px;
+}
+.floating-bar {
+  display: flex; align-items: center; gap: 2px; padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--line); cursor: move; user-select: none; touch-action: none;
+  background: var(--raised);
+}
+.floating-title { flex: 1; font-size: 13px; font-weight: 600; }
+.floating.off .floating-title { color: var(--muted); }
+.floating-body { flex: 1; overflow-y: auto; padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr !important; }
+  .side-resize, .grip { display: none; }
+}
+
+/* --- Library (filmstrip) ------------------------------------------------------------------- */
+.app { grid-template-rows: 52px minmax(0, 1fr) auto; }
+.stage { grid-column: 1; grid-row: 2; }
+.side { grid-column: 2; grid-row: 2 / span 2; }
+.filmstrip { grid-column: 1; grid-row: 3; border-top: 1px solid var(--line); background: var(--bg); min-width: 0; }
+.filmstrip-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px 0; }
+.filmstrip-actions { display: flex; gap: 6px; }
+.filmstrip-actions button { padding: 4px 10px; font-size: 12px; }
+.filmstrip-row { display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px 10px; scrollbar-width: thin; }
+.thumb {
+  position: relative; flex: 0 0 auto; width: 88px; height: 66px; border-radius: 6px; overflow: hidden;
+  background: var(--raised); cursor: pointer; outline: 2px solid transparent; outline-offset: 1px;
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb.selected { outline-color: #5b8cff88; }
+.thumb.active { outline-color: var(--accent); }
+.thumb-loading { position: absolute; inset: 0; background: linear-gradient(90deg, var(--raised), var(--line), var(--raised)); background-size: 200% 100%; animation: shimmer 1.2s infinite linear; }
+@keyframes shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+.thumb-dot { position: absolute; left: 6px; top: 6px; margin: 0; box-shadow: 0 0 0 1.5px #000a; }
+.thumb-remove {
+  position: absolute; right: 3px; top: 3px; width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  border: none; background: #000b; color: #fff; font-size: 13px; line-height: 18px; display: none;
+}
+.thumb:hover .thumb-remove { display: block; }
+.toast {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  background: #000d; color: var(--text); padding: 8px 14px; border-radius: 8px; font-size: 12.5px;
+  box-shadow: 0 0 0 1px var(--line); max-width: 80%; text-align: center;
+}
+@media (max-width: 760px) {
+  .app { grid-template-rows: 52px 1fr auto auto; }
+  .side { grid-column: 1; grid-row: 4; }
+  .filmstrip-actions button:nth-child(n+3) { display: none; }
+}

@@ -2,8 +2,9 @@ import { vertexSrc, lumSrc, blurSrc, coeffSrc, mainSrc } from './shaders'
 import type { EditState, Lut } from '../edit'
 import { HSL_COLOURS, GRADE_ZONES } from '../edit'
 import { buildCurveTable, CURVE_SIZE } from './curve'
-import { tuning, solveShoulder } from './tuning'
-import { SRGB_TO_PROPHOTO, PROPHOTO_TO_SRGB, PROPHOTO_LUMA, whiteBalance, mul, columnMajor } from './color'
+import { tuning } from './tuning'
+import { toneTable, TONE_SIZE } from './tone'
+import { SRGB_TO_PROPHOTO, PROPHOTO_TO_SRGB, PROPHOTO_LUMA, whiteBalance, columnMajor } from './color'
 
 export type { Adjustments } from '../edit'
 export { defaultAdjustments } from '../edit'
@@ -47,7 +48,8 @@ export class Renderer {
   private texture: WebGLTexture | null = null
   private mask: Target[] = [] // ping-pong targets on the small image
   private floatTargets: boolean
-  private shoulderCache = { exposure: NaN, knee: NaN, a: 1 }
+  private toneTex: WebGLTexture
+  private toneKey = ''
   private curveTex: WebGLTexture
   private curveKey = ''
   private curveActive = false
@@ -88,6 +90,19 @@ export class Renderer {
     gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4))
     this.curveTex = gl.createTexture()!
     this.lutTex = gl.createTexture()!
+    this.toneTex = gl.createTexture()!
+  }
+
+  /** Rebuild the tone tables only when Contrast, Whites or Blacks change (the other tables never change). */
+  private syncTone(contrast: number, whites: number, blacks: number) {
+    const key = `${contrast},${Math.max(0, whites)},${Math.min(0, blacks)}`
+    if (key === this.toneKey) return
+    this.toneKey = key
+    const gl = this.gl
+    gl.bindTexture(gl.TEXTURE_2D, this.toneTex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TONE_SIZE, 1, 0, gl.RGBA, gl.FLOAT, toneTable(contrast, whites, blacks))
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
   }
 
   /** Rebuild the curve lookup table only when the curve settings actually change. */
@@ -245,11 +260,8 @@ export class Renderer {
     const adj = edit.adj
     this.syncCurve(edit)
     this.syncLut(edit.lut)
-    if (this.shoulderCache.exposure !== adj.exposure || this.shoulderCache.knee !== tuning.knee) {
-      this.shoulderCache = { exposure: adj.exposure, knee: tuning.knee, a: solveShoulder(adj.exposure, tuning.knee) }
-    }
-    const toWorking = mul(whiteBalance(adj.temp, adj.tint, tuning.miredPerStep, tuning.duvPerStep), SRGB_TO_PROPHOTO)
-    const contrast = adj.contrast / 100
+    this.syncTone(adj.contrast, adj.whites, adj.blacks)
+    const wb = whiteBalance(adj.temp, adj.tint, tuning.miredPerStep, tuning.duvPerStep, tuning.wbBaseK, tuning.tintK)
     this.pass(p, to, w, h, this.texture, () => {
       gl.uniform1i(p.u('u_flipY'), to ? 0 : 1)
       gl.uniform1i(p.u('u_image'), 0)
@@ -260,21 +272,30 @@ export class Renderer {
       if (!useMask) gl.bindTexture(gl.TEXTURE_2D, this.blank2D)
       gl.uniform1i(p.u('u_useMask'), useMask ? 1 : 0)
       gl.uniform1i(p.u('u_bypass'), bypass ? 1 : 0)
-      gl.uniformMatrix3fv(p.u('u_toWorking'), false, columnMajor(toWorking))
+      gl.uniformMatrix3fv(p.u('u_toWorking'), false, columnMajor(SRGB_TO_PROPHOTO))
+      gl.uniformMatrix3fv(p.u('u_wb'), false, columnMajor(wb))
+      gl.uniform1i(p.u('u_useScene'), adj.exposure !== 0 || adj.temp !== 0 || adj.tint !== 0 ? 1 : 0)
+      gl.activeTexture(gl.TEXTURE4)
+      gl.bindTexture(gl.TEXTURE_2D, this.toneTex)
+      gl.uniform1i(p.u('u_tone'), 4)
+      gl.uniform1f(p.u('u_toneSize'), TONE_SIZE)
+      gl.uniform1i(p.u('u_useContrast'), adj.contrast !== 0 || adj.whites > 0 ? 1 : 0)
+      gl.uniform1i(p.u('u_useBlacksCurve'), adj.blacks < 0 ? 1 : 0)
+      gl.uniform1i(p.u('u_sceneTone'), tuning.sceneTone ? 1 : 0)
       gl.uniformMatrix3fv(p.u('u_toOutput'), false, columnMajor(PROPHOTO_TO_SRGB))
       gl.uniform3f(p.u('u_luma'), ...PROPHOTO_LUMA)
       gl.uniform1f(p.u('u_exposure'), adj.exposure)
-      gl.uniform1f(p.u('u_shoulderA'), this.shoulderCache.a)
-      gl.uniform1f(p.u('u_knee'), tuning.knee)
-      gl.uniform1f(p.u('u_shadows'), (adj.shadows / 100) * tuning.shadowsStops)
-      gl.uniform1f(p.u('u_highlights'), (adj.highlights / 100) * tuning.highlightsStops)
-      gl.uniform2f(p.u('u_shadowsZone'), ...tuning.shadowsZone)
-      gl.uniform2f(p.u('u_highlightsZone'), ...tuning.highlightsZone)
-      gl.uniform1f(p.u('u_whites'), (adj.whites / 100) * tuning.whitesStops)
-      gl.uniform1f(p.u('u_blacks'), (adj.blacks / 100) * tuning.blacksStops)
-      gl.uniform1f(p.u('u_whitesFrom'), tuning.whitesFrom)
-      gl.uniform1f(p.u('u_blacksTo'), tuning.blacksTo)
-      gl.uniform1f(p.u('u_contrast'), contrast * (contrast >= 0 ? tuning.contrastStrength : tuning.contrastStrengthNeg))
+      // Each slider has separate knobs for + and − (see tuning.ts).
+      const t = tuning
+      const up = (v: number) => v > 0
+      gl.uniform1f(p.u('u_shadows'), (adj.shadows / 100) * (up(adj.shadows) ? t.shadowsUp : t.shadowsDown))
+      gl.uniform1f(p.u('u_highlights'), (adj.highlights / 100) * (up(adj.highlights) ? t.highlightsUp : t.highlightsDown))
+      gl.uniform2f(p.u('u_shadowsZone'), ...(up(adj.shadows) ? t.shadowsZoneUp : t.shadowsZoneDown))
+      gl.uniform2f(p.u('u_highlightsZone'), ...(up(adj.highlights) ? t.highlightsZoneUp : t.highlightsZoneDown))
+      gl.uniform1f(p.u('u_whites'), adj.whites < 0 ? (adj.whites / 100) * t.whitesDown : 0) // + side is a measured curve
+      gl.uniform1f(p.u('u_blacks'), adj.blacks > 0 ? (adj.blacks / 100) * t.blacksUp : 0) // − side is a measured curve
+      gl.uniform1f(p.u('u_whitesFrom'), t.whitesFromDown)
+      gl.uniform1f(p.u('u_blacksTo'), t.blacksToUp)
       gl.uniform1f(p.u('u_vibrance'), (adj.vibrance / 100) * tuning.vibranceStrength)
       gl.uniform1f(p.u('u_skinProtect'), tuning.skinProtect)
       gl.uniform1f(p.u('u_saturation'), (adj.saturation / 100) * (adj.saturation >= 0 ? tuning.saturationStrength : 1))

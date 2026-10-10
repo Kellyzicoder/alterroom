@@ -54,7 +54,7 @@ export const PANELS: PanelDef[] = [
         help: 'Shifts colours toward green or magenta. Handy for odd indoor light.',
         track: 'linear-gradient(90deg, #3faa5a, #c9c9c9 50%, #c84fc2)' },
       { key: 'vibrance', label: 'Vibrance', min: -100, max: 100, step: 1, digits: 0,
-        help: 'Boosts dull colours more than strong ones, and goes easy on skin.',
+        help: 'Boosts dull colours more than strong ones.',
         track: 'linear-gradient(90deg, #8e8e93, #b98a8a 50%, #e0a040 75%, #50b0e0)' },
       { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, digits: 0,
         help: 'Makes every colour stronger or weaker. All the way left is black and white.',

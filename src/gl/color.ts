@@ -69,31 +69,37 @@ const uvToXYZ = ([u, v]: [number, number]): Vec3 => {
   return [x / y, 1, (1 - x - y) / y]
 }
 
-const D50_CCT = 5003
-const D50_UV = toUV([D50[0] / (D50[0] + D50[1] + D50[2]), D50[1] / (D50[0] + D50[1] + D50[2])])
-
 /**
  * White-balance matrix in linear ProPhoto for JPEG-style relative sliders (−100..+100).
  * +Temp warms the photo (as if correcting for bluer light); +Tint pushes toward magenta.
+ * Measured against Lightroom: it acts like Bradford adaptation from the "assumed" light back to the
+ * starting light, with the gains scaled so no cone channel is darkened (like raw white balance).
  * At 0 / 0 this is exactly the identity matrix.
  */
-export function whiteBalance(temp: number, tint: number, miredPerStep: number, duvPerStep: number): Mat3 {
+export function whiteBalance(temp: number, tint: number, miredPerStep: number, duvPerStep: number, baseK: number, tintK: number): Mat3 {
   if (temp === 0 && tint === 0) return [1, 0, 0, 0, 1, 0, 0, 0, 1]
-  const mired = 1e6 / D50_CCT - temp * miredPerStep
+  // Temp: the assumed light moves along the black-body line, starting from baseK.
+  const mired = 1e6 / baseK - temp * miredPerStep
   const T = Math.min(25000, Math.max(1667, 1e6 / mired))
-  const base = toUV(planckXY(D50_CCT)), moved = toUV(planckXY(T))
-  // Tint moves at right angles to the black-body line (toward green for +), at the new temperature.
-  const a = toUV(planckXY(T * 0.999)), b = toUV(planckXY(T * 1.001))
+  const gTemp = coneGains(uvToXYZ(toUV(planckXY(T))), uvToXYZ(toUV(planckXY(baseK))))
+  // Tint: the assumed light moves at right angles to the black-body line (toward green for +), at tintK.
+  const a = toUV(planckXY(tintK * 0.999)), b = toUV(planckXY(tintK * 1.001))
   const len = Math.hypot(b[0] - a[0], b[1] - a[1])
   const normal = [(a[1] - b[1]) / len, (b[0] - a[0]) / len] // tangent turned 90°
   if (normal[1] < 0) { normal[0] = -normal[0]; normal[1] = -normal[1] } // green side = higher v
-  // Start from D50 and move by how far the black-body line moves, then across it for tint.
-  const uv: [number, number] = [
-    D50_UV[0] + moved[0] - base[0] + normal[0] * tint * duvPerStep,
-    D50_UV[1] + moved[1] - base[1] + normal[1] * tint * duvPerStep,
-  ]
-  const assumedLight = uvToXYZ(uv)
-  return mul(inv(PROPHOTO_TO_XYZ_D50), mul(adapt(assumedLight, D50), PROPHOTO_TO_XYZ_D50))
+  const at = toUV(planckXY(tintK))
+  const gTint = coneGains(uvToXYZ([at[0] + normal[0] * tint * duvPerStep, at[1] + normal[1] * tint * duvPerStep]), uvToXYZ(at))
+  // Bradford: gains on the three cone responses, smallest gain set to 1.
+  const g = gTemp.map((v, i) => v * gTint[i])
+  const low = Math.min(...g)
+  const cone = mul(inv(BRADFORD), mul([g[0] / low, 0, 0, 0, g[1] / low, 0, 0, 0, g[2] / low], BRADFORD))
+  return mul(inv(PROPHOTO_TO_XYZ_D50), mul(cone, PROPHOTO_TO_XYZ_D50))
+}
+
+/** Cone (Bradford) gains that adapt colours seen under light `from` to light `to`. */
+function coneGains(from: Vec3, to: Vec3): Vec3 {
+  const s = apply(BRADFORD, from), d = apply(BRADFORD, to)
+  return [d[0] / s[0], d[1] / s[1], d[2] / s[2]]
 }
 
 /** GLSL wants matrices column by column. */
