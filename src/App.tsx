@@ -49,7 +49,7 @@ export default function App() {
   const [disabled, setDisabled] = useState<Record<string, boolean>>({})
   const [hint, setHint] = useState<string | null>(null)
   const [mixTab, setMixTab] = useState<MixTab>('hue')
-  const [gradeTab, setGradeTab] = useState<(typeof GRADE_TABS)[number]['zone']>('mid')
+  const [gradeTab, setGradeTab] = useState<(typeof GRADE_TABS)[number]['zone'] | 'three'>('three')
   const [curveTab, setCurveTab] = useState<CurveChannel>('master')
   const [preset, setPreset] = useState<PresetResult | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
@@ -194,7 +194,10 @@ export default function App() {
     onToggleEnabled: () => setDisabled((d) => ({ ...d, [id]: !d[id] })),
   })
 
-  const gradeLabel = GRADE_TABS.find((t) => t.zone === gradeTab)!.label
+  const gradeLabel = GRADE_TABS.find((t) => t.zone === gradeTab)?.label ?? ''
+  const zoneChanged = (z: string) => adj[`g_${z}_sat` as AdjKey] !== 0 || adj[`g_${z}_lum` as AdjKey] !== 0
+  const setWheel = (z: string, h: number, s: number) =>
+    setEdit((e) => ({ ...e, adj: { ...e.adj, [`g_${z}_hue`]: h, [`g_${z}_sat`]: s } }))
 
   return (
     <div className="app">
@@ -299,24 +302,55 @@ export default function App() {
           {/* Colour grading wheels */}
           <Panel name="Colour grading" {...panelProps('grade', keysChanged(adj, KEYS.grade))}>
             <div className="tabs" role="tablist">
+              <button role="tab" aria-selected={gradeTab === 'three'} aria-label="Shadows, midtones and highlights together" title="Shadows, midtones and highlights together" className={gradeTab === 'three' ? 'on' : ''} onClick={() => setGradeTab('three')}>
+                <svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.3">
+                  <circle cx="8" cy="4" r="3" /><circle cx="4" cy="10" r="3" /><circle cx="12" cy="10" r="3" />
+                </svg>
+                {['shadow', 'mid', 'high'].some(zoneChanged) && <i className="dot" />}
+              </button>
               {GRADE_TABS.map((t) => (
                 <button key={t.zone} role="tab" aria-selected={gradeTab === t.zone} className={gradeTab === t.zone ? 'on' : ''} onClick={() => setGradeTab(t.zone)}>
                   {t.label}
-                  {(adj[`g_${t.zone}_sat`] !== 0 || adj[`g_${t.zone}_lum`] !== 0) && <i className="dot" />}
+                  {zoneChanged(t.zone) && <i className="dot" />}
                 </button>
               ))}
             </div>
-            <div className="wheel-wrap">
-              <Wheel
-                hue={adj[`g_${gradeTab}_hue`]}
-                sat={adj[`g_${gradeTab}_sat`]}
-                disabled={noPhoto}
-                onChange={(h, s) => setEdit((e) => ({ ...e, adj: { ...e.adj, [`g_${gradeTab}_hue`]: h, [`g_${gradeTab}_sat`]: s } }))}
-                onHint={setHint}
-              />
-              <p className="small wheel-readout">Hue {adj[`g_${gradeTab}_hue`]}° · Saturation {adj[`g_${gradeTab}_sat`]}</p>
-            </div>
-            {sliders([gradeLum(gradeTab, gradeLabel), ...GRADE_EXTRA])}
+            {gradeTab === 'three' ? (
+              // Lightroom-style layout: Midtones on top, Shadows and Highlights below.
+              <div className="three-wheels">
+                {(['mid', 'shadow', 'high'] as const).map((z) => (
+                  <div key={z} className={`mini-wheel mini-${z}`}>
+                    <span className="mini-label">{GRADE_TABS.find((t) => t.zone === z)!.label}</span>
+                    <Wheel size={112} hue={adj[`g_${z}_hue`]} sat={adj[`g_${z}_sat`]} disabled={noPhoto} onChange={(h, sv) => setWheel(z, h, sv)} onHint={setHint} />
+                    <input
+                      type="range" min={-100} max={100} step={1} value={adj[`g_${z}_lum`]} disabled={noPhoto}
+                      aria-label={`${GRADE_TABS.find((t) => t.zone === z)!.label} luminance`}
+                      title={`Luminance ${adj[`g_${z}_lum`]}`}
+                      style={{ ['--track' as string]: 'linear-gradient(90deg, #1c1c1e, #8e8e93 50%, #f2f2f2)' }}
+                      onChange={(e) => set(`g_${z}_lum`, parseFloat(e.target.value))}
+                      onDoubleClick={() => set(`g_${z}_lum`, 0)}
+                      onPointerEnter={() => setHint('Luminance: makes this part of the photo brighter or darker. Double-click to reset.')}
+                      onPointerLeave={() => setHint(null)}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <>
+                <div className="wheel-wrap">
+                  <Wheel
+                    hue={adj[`g_${gradeTab}_hue`]}
+                    sat={adj[`g_${gradeTab}_sat`]}
+                    disabled={noPhoto}
+                    onChange={(h, sv) => setWheel(gradeTab, h, sv)}
+                    onHint={setHint}
+                  />
+                  <p className="small wheel-readout">Hue {adj[`g_${gradeTab}_hue`]}° · Saturation {adj[`g_${gradeTab}_sat`]}</p>
+                </div>
+                {sliders([gradeLum(gradeTab, gradeLabel)])}
+              </>
+            )}
+            {sliders(GRADE_EXTRA)}
           </Panel>
 
           {/* Tone curve (Pro) */}

@@ -103,7 +103,7 @@ export const GRADE_TABS = [
   { zone: 'shadow', label: 'Shadows' },
   { zone: 'mid', label: 'Midtones' },
   { zone: 'high', label: 'Highlights' },
-  { zone: 'global', label: 'All' },
+  { zone: 'global', label: 'Global' },
 ] as const
 
 export const gradeLum = (zone: string, label: string): Control => ({
