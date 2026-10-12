@@ -44,6 +44,7 @@ const CURVE_TABS: { id: CurveChannel; label: string; colour: string }[] = [
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const stageRef = useRef<HTMLElement>(null)
+  const pickRef = useRef<HTMLInputElement>(null)
   const rendererRef = useRef<Renderer | null>(null)
   const frameRef = useRef(0)
   const [edit, setEdit] = useState<EditState>(defaultEdit)
@@ -543,9 +544,12 @@ export default function App() {
         </div>
       </header>
 
+      {/* File picker for clicks on the empty middle area (outside <main> so its click doesn't bounce back) */}
+      <input ref={pickRef} type="file" accept="image/*" multiple hidden onChange={(e) => { if (e.target.files) addPhotos(e.target.files); e.target.value = '' }} />
       <main
         ref={stageRef}
-        className="stage"
+        className={`stage ${noPhoto ? 'pick' : ''}`}
+        onClick={() => { if (noPhoto) pickRef.current?.click() }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault()
@@ -565,10 +569,11 @@ export default function App() {
       >
         {error && <p className="error">{error}</p>}
         {noPhoto && !error && (
-          <div className="empty">
+          // A real button, so Tab + Enter works too. Its click reaches the stage, which opens the file picker.
+          <button type="button" className="empty">
             <p>Drop photos here</p>
-            <p className="small">or click “Add photos” at the top (up to {MAX_PHOTOS})</p>
-          </div>
+            <p className="small">or click to choose them (up to {MAX_PHOTOS})</p>
+          </button>
         )}
         <canvas ref={canvasRef} hidden={noPhoto} />
         {showBefore && fileName && <span className="badge">Original</span>}
